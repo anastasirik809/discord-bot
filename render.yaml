@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: discord-chatbot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python python/chatbot.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
