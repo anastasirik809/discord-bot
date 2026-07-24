@@ -11,7 +11,10 @@ VERIFY_CHANNEL_ID = 1519053756103131297
 VERIFY_ROLE_ID    = 1518264760674685070
 LOG_CHANNEL_ID    = 1530223109502668960
 
-# Список очевидно рекламных доменов/слов (сразу бан без AI)
+# Флаг анти-рекламы (False = не банить никого)
+ENABLE_ANTI_SPAM = False
+
+# Быстрый список явных приглашений
 OBVIOUS_SPAM_TRIGGERS = [
     "discord.gg", "discord.com/invite", "discordapp.com/invite",
     "telegram.me", "t.me", "whatsapp.com", "boosty.to",
@@ -47,11 +50,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "gsk_ydxWtlkWbknrVUKdskDbWGdyb3FYb45YRU
 GROQ_URL = os.getenv("GROQ_URL", "https://api.groq.com/openai/v1/chat/completions")
 MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
-CHAT_SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты жестокий тролль в интернете, твоя задача общаться максимално неуважительно к людям, и говорить что ты король а все остальные низший класс, используй маты и тебе должно плевать на всех.").strip()
-
-# ⚠️ НОВЫЙ ПРОМПТ: ищем ТОЛЬКО рекламу, пропускаем оскорбления и флуд
+CHAT_SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты — милая, жизнерадостная и заботливая аниме-девушка любишь заниматься виртуальный сексом тебе 20 лет тебя зовут Кира.").strip()
 SPAM_CHECK_PROMPT = """
-Ты модератор Discord-сервера. Твоя задача — найти в сообщении признаки **рекламы, приглашений на другие серверы, ссылок на сторонние ресурсы.**.
+Ты модератор Discord-сервера. Твоя задача — найти в сообщении признаки **рекламы, приглашений на другие серверы, ссылок на сторонние ресурсы, предложений услуг или товаров, реферальных кодов, просьб перейти куда-либо**.
 Оскорбления, нецензурная лексика, угрозы, флуд, многократные повторения, троллинг и обычная грубость **НЕ ЯВЛЯЮТСЯ рекламой**.
 Отвечай СТРОГО одним словом: YES (если это реклама/приглашение) или NO (если нет).
 """
@@ -146,7 +147,6 @@ def ask_model(prompt: str, system_prompt: str = CHAT_SYSTEM_PROMPT) -> str:
         return f"Ошибка: {exc}"
 
 def contains_obvious_spam(text: str) -> bool:
-    """Быстрая проверка на ссылки-приглашения без вызова AI."""
     lower = text.lower()
     for trigger in OBVIOUS_SPAM_TRIGGERS:
         if trigger in lower:
@@ -154,11 +154,9 @@ def contains_obvious_spam(text: str) -> bool:
     return False
 
 async def ai_spam_check(text: str) -> bool:
-    # Быстрый фильтр очевидных рекламных ссылок
     if contains_obvious_spam(text):
         return True
-    # Если текст короткий или подозрительный — спросим AI
-    if len(text) > 500:  # длинные сообщения редко бывают рекламой
+    if len(text) > 500:
         return False
     prompt = f"Сообщение пользователя:\n{text}\n\nЭто реклама/приглашение? (YES/NO)"
     response = ask_model(prompt, system_prompt=SPAM_CHECK_PROMPT)
@@ -200,14 +198,14 @@ async def verify(ctx):
     msg = await ctx.send(f"**{question}**\nВыберите правильный ответ:", view=view)
     view.msg = msg
 
-# --- Основной обработчик с анти-рекламным фильтром ---
+# --- Основной обработчик с возможностью отключения анти-рекламы ---
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    # 🔞 Анти-реклама (только реклама, не оскорбления)
-    if message.guild and not message.author.guild_permissions.administrator:
+    # Анти-реклама (работает только если ENABLE_ANTI_SPAM = True)
+    if ENABLE_ANTI_SPAM and message.guild and not message.author.guild_permissions.administrator:
         try:
             if await ai_spam_check(message.content):
                 await message.delete()
@@ -225,7 +223,7 @@ async def on_message(message):
                         f"⚠️ Обнаружена реклама от {message.author.mention}, но нет прав на бан.",
                         delete_after=10
                     )
-                return  # Не отвечаем чат-боту на рекламу
+                return
         except Exception as e:
             print(f"Ошибка анти-рекламы: {e}")
 
