@@ -9,7 +9,14 @@ from threading import Thread
 # --- Константы ---
 VERIFY_CHANNEL_ID = 1519053756103131297
 VERIFY_ROLE_ID    = 1518264760674685070
-LOG_CHANNEL_ID    = 1530223109502668960  # Сюда приходят уведомления о бане
+LOG_CHANNEL_ID    = 1530223109502668960
+
+# Список очевидно рекламных доменов/слов (сразу бан без AI)
+OBVIOUS_SPAM_TRIGGERS = [
+    "discord.gg", "discord.com/invite", "discordapp.com/invite",
+    "telegram.me", "t.me", "whatsapp.com", "boosty.to",
+    "patreon.com", "paypal.me", "cash.app", "venmo.com"
+]
 
 QUESTIONS = [
     ("Сколько будет 2 + 3?", "5", ["4", "5", "6", "7", "8"]),
@@ -41,9 +48,12 @@ GROQ_URL = os.getenv("GROQ_URL", "https://api.groq.com/openai/v1/chat/completion
 MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 CHAT_SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты — милая, жизнерадостная и заботливая аниме-девушка...").strip()
+
+# ⚠️ НОВЫЙ ПРОМПТ: ищем ТОЛЬКО рекламу, пропускаем оскорбления и флуд
 SPAM_CHECK_PROMPT = """
-Ты модератор Discord-сервера. Определи, является ли сообщение рекламой, спамом, приглашением на другой сервер (включая замаскированные ссылки, эмодзи) или содержит вредоносный контент.
-Отвечай СТРОГО одним словом: YES (если спам/реклама) или NO (если нет).
+Ты модератор Discord-сервера. Твоя задача — найти в сообщении признаки **рекламы, приглашений на другие серверы, ссылок на сторонние ресурсы, предложений услуг или товаров, реферальных кодов, просьб перейти куда-либо**.
+Оскорбления, нецензурная лексика, угрозы, флуд, многократные повторения, троллинг и обычная грубость **НЕ ЯВЛЯЮТСЯ рекламой**.
+Отвечай СТРОГО одним словом: YES (если это реклама/приглашение) или NO (если нет).
 """
 
 INTENTS = discord.Intents.default()
@@ -135,11 +145,22 @@ def ask_model(prompt: str, system_prompt: str = CHAT_SYSTEM_PROMPT) -> str:
     except Exception as exc:
         return f"Ошибка: {exc}"
 
+def contains_obvious_spam(text: str) -> bool:
+    """Быстрая проверка на ссылки-приглашения без вызова AI."""
+    lower = text.lower()
+    for trigger in OBVIOUS_SPAM_TRIGGERS:
+        if trigger in lower:
+            return True
+    return False
+
 async def ai_spam_check(text: str) -> bool:
-    # Не проверяем слишком длинные сообщения (экономия ресурсов)
-    if len(text) > 500:
+    # Быстрый фильтр очевидных рекламных ссылок
+    if contains_obvious_spam(text):
+        return True
+    # Если текст короткий или подозрительный — спросим AI
+    if len(text) > 500:  # длинные сообщения редко бывают рекламой
         return False
-    prompt = f"Сообщение пользователя:\n{text}\n\nЭто спам/реклама? (YES/NO)"
+    prompt = f"Сообщение пользователя:\n{text}\n\nЭто реклама/приглашение? (YES/NO)"
     response = ask_model(prompt, system_prompt=SPAM_CHECK_PROMPT)
     return response.strip().upper() == "YES"
 
@@ -179,35 +200,34 @@ async def verify(ctx):
     msg = await ctx.send(f"**{question}**\nВыберите правильный ответ:", view=view)
     view.msg = msg
 
-# --- Основной обработчик с анти-спамом ---
+# --- Основной обработчик с анти-рекламным фильтром ---
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    # 🔍 Проверка на спам для обычных пользователей (админы пропускаются)
+    # 🔞 Анти-реклама (только реклама, не оскорбления)
     if message.guild and not message.author.guild_permissions.administrator:
         try:
             if await ai_spam_check(message.content):
                 await message.delete()
                 try:
-                    await message.author.ban(reason="Спам/реклама (AI-детектор)", delete_message_days=1)
-                    # Логирование
+                    await message.author.ban(reason="Реклама (AI-детектор)", delete_message_days=1)
                     log_channel = bot.get_channel(LOG_CHANNEL_ID)
                     if log_channel:
                         await log_channel.send(
-                            f"🚨 **Забанен:** {message.author.mention} (ID: `{message.author.id}`)\n"
+                            f"🚨 **Забанен за рекламу:** {message.author.mention} (ID: `{message.author.id}`)\n"
                             f"**Канал:** {message.channel.mention}\n"
                             f"**Сообщение:** ||{message.content}||"
                         )
                 except discord.Forbidden:
                     await message.channel.send(
-                        f"⚠️ Обнаружена реклама от {message.author.mention}, но не могу забанить (нет прав).",
+                        f"⚠️ Обнаружена реклама от {message.author.mention}, но нет прав на бан.",
                         delete_after=10
                     )
-                return  # не отвечаем чат-боту на спам
+                return  # Не отвечаем чат-боту на рекламу
         except Exception as e:
-            print(f"Ошибка анти-спама: {e}")
+            print(f"Ошибка анти-рекламы: {e}")
 
     # Остальная логика чат-бота
     if message.content.startswith("!"):
