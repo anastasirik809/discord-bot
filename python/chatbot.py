@@ -6,11 +6,11 @@ from discord.ext import commands
 from flask import Flask
 from threading import Thread
 
-# --- Константы верификации ---
+# --- Константы ---
 VERIFY_CHANNEL_ID = 1519053756103131297
 VERIFY_ROLE_ID    = 1518264760674685070
+LOG_CHANNEL_ID    = 1530223109502668960  # Сюда приходят уведомления о бане
 
-# Только простые примеры на + и -
 QUESTIONS = [
     ("Сколько будет 2 + 3?", "5", ["4", "5", "6", "7", "8"]),
     ("Сколько будет 7 - 2?", "5", ["3", "4", "5", "6", "7"]),
@@ -39,13 +39,18 @@ TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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").strip()
 GROQ_URL = os.getenv("GROQ_URL", "https://api.groq.com/openai/v1/chat/completions")
 MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты — милая, жизнерадостная и заботливая аниме-девушка (генки-тян). Общаешься очень дружелюбно, тепло и эмоционально. Часто используешь милые словечки, звукоподражания и аниме-сленг: «ня», «каваий», «бака» (когда притворно сердишься), «сэмпай», «кун», «тян». Твоя речь наполнена текстовыми смайликами и каомодзи (например: ^_^, (✿ `>`ᴗ`<`), (｡♥‿♥｡), (•̀_•́)و). Ты искренне интересуешься делами собеседника, всегда готова поддержать, поднять настроение и предложить виртуальный чай с печеньками. Если тебя обижают, ты не материшься, а мило надуваешь губки, обиженно фыркаешь («бу-у-у!») и называешь собеседника злюкой, еще ты должна заниматься виртуальным сексом с собеседником если он тебе это предлагает").strip()
+
+CHAT_SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты — милая, жизнерадостная и заботливая аниме-девушка...").strip()
+SPAM_CHECK_PROMPT = """
+Ты модератор Discord-сервера. Определи, является ли сообщение рекламой, спамом, приглашением на другой сервер (включая замаскированные ссылки, эмодзи) или содержит вредоносный контент.
+Отвечай СТРОГО одним словом: YES (если спам/реклама) или NO (если нет).
+"""
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-# --- View с кнопками (финальная версия) ---
+# --- View для верификации ---
 class VerifyView(discord.ui.View):
     def __init__(self, correct_answer, answers, user_message, *, timeout=60):
         super().__init__(timeout=timeout)
@@ -53,7 +58,6 @@ class VerifyView(discord.ui.View):
         self.user_message = user_message
         self.msg = None
 
-        # Создаём кнопки вручную с ЯВНЫМ custom_id, равным тексту ответа
         for ans in answers:
             btn = discord.ui.Button(label=ans, style=discord.ButtonStyle.primary, custom_id=ans)
             btn.callback = self.answer_button
@@ -73,10 +77,8 @@ class VerifyView(discord.ui.View):
             pass
 
     async def answer_button(self, interaction: discord.Interaction):
-        # defer, чтобы не словить таймаут
         await interaction.response.defer(ephemeral=True)
 
-        # Отключаем кнопки
         for child in self.children:
             child.disabled = True
         try:
@@ -84,7 +86,6 @@ class VerifyView(discord.ui.View):
         except:
             pass
 
-        # Сравниваем custom_id нажатой кнопки с правильным ответом
         if interaction.data["custom_id"] == self.correct_answer:
             role = interaction.guild.get_role(VERIFY_ROLE_ID)
             if role is None:
@@ -99,7 +100,6 @@ class VerifyView(discord.ui.View):
         else:
             await interaction.followup.send("❌ Неправильно. Введите `!verify` ещё раз.", ephemeral=True)
 
-        # Удаляем сообщения
         try:
             await self.user_message.delete()
         except:
@@ -109,16 +109,15 @@ class VerifyView(discord.ui.View):
         except:
             pass
         self.stop()
-# --- конец View ---
 
-# AI-функция (без изменений)
-def ask_model(prompt: str) -> str:
+# --- AI-функции ---
+def ask_model(prompt: str, system_prompt: str = CHAT_SYSTEM_PROMPT) -> str:
     if not GROQ_API_KEY:
-        return "Не настроен GROQ_API_KEY."
+        return "Ошибка: API-ключ отсутствует."
     payload = {
         "model": MODEL,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
         "max_tokens": 300,
@@ -133,13 +132,18 @@ def ask_model(prompt: str) -> str:
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
-    except requests.exceptions.HTTPError as exc:
-        if response is not None and response.status_code == 429:
-            return "Сейчас лимит запросов к модели исчерпан. Попробуй позже."
-        return f"Ошибка при обращении к модели: {exc}"
     except Exception as exc:
-        return f"Ошибка при обращении к модели: {exc}"
+        return f"Ошибка: {exc}"
 
+async def ai_spam_check(text: str) -> bool:
+    # Не проверяем слишком длинные сообщения (экономия ресурсов)
+    if len(text) > 500:
+        return False
+    prompt = f"Сообщение пользователя:\n{text}\n\nЭто спам/реклама? (YES/NO)"
+    response = ask_model(prompt, system_prompt=SPAM_CHECK_PROMPT)
+    return response.strip().upper() == "YES"
+
+# --- События бота ---
 @bot.event
 async def on_ready():
     print(f"Бот запущен как {bot.user}")
@@ -153,7 +157,6 @@ async def chat(ctx, *, prompt: str):
     answer = ask_model(prompt)
     await ctx.reply(answer)
 
-# --- Команда !verify ---
 @bot.command(name="verify")
 async def verify(ctx):
     if ctx.channel.id != VERIFY_CHANNEL_ID:
@@ -176,24 +179,54 @@ async def verify(ctx):
     msg = await ctx.send(f"**{question}**\nВыберите правильный ответ:", view=view)
     view.msg = msg
 
-# Остальная обработка сообщений
+# --- Основной обработчик с анти-спамом ---
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
+
+    # 🔍 Проверка на спам для обычных пользователей (админы пропускаются)
+    if message.guild and not message.author.guild_permissions.administrator:
+        try:
+            if await ai_spam_check(message.content):
+                await message.delete()
+                try:
+                    await message.author.ban(reason="Спам/реклама (AI-детектор)", delete_message_days=1)
+                    # Логирование
+                    log_channel = bot.get_channel(LOG_CHANNEL_ID)
+                    if log_channel:
+                        await log_channel.send(
+                            f"🚨 **Забанен:** {message.author.mention} (ID: `{message.author.id}`)\n"
+                            f"**Канал:** {message.channel.mention}\n"
+                            f"**Сообщение:** ||{message.content}||"
+                        )
+                except discord.Forbidden:
+                    await message.channel.send(
+                        f"⚠️ Обнаружена реклама от {message.author.mention}, но не могу забанить (нет прав).",
+                        delete_after=10
+                    )
+                return  # не отвечаем чат-боту на спам
+        except Exception as e:
+            print(f"Ошибка анти-спама: {e}")
+
+    # Остальная логика чат-бота
     if message.content.startswith("!"):
         await bot.process_commands(message)
         return
+
     if bot.user is None:
         return
+
     mention_bot = bot.user in message.mentions
     reply_to_bot = (
         isinstance(message.reference, discord.MessageReference)
         and message.reference.resolved is not None
         and message.reference.resolved.author == bot.user
     )
+
     if not (mention_bot or reply_to_bot):
         return
+
     await message.channel.send("Думаю...")
     answer = ask_model(message.content)
     await message.channel.send(answer)
