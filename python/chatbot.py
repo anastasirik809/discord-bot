@@ -44,13 +44,19 @@ INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-# --- View с кнопками (исправленный, без таймаутов) ---
+# --- View с кнопками (полностью ручное создание, без декоратора) ---
 class VerifyView(discord.ui.View):
-    def __init__(self, correct_answer, user_message, *, timeout=60):
+    def __init__(self, correct_answer, answers, user_message, *, timeout=60):
         super().__init__(timeout=timeout)
         self.correct_answer = correct_answer
         self.user_message = user_message
         self.msg = None
+
+        # Создаём кнопки вручную, никаких шаблонных placeholder
+        for ans in answers:
+            btn = discord.ui.Button(label=ans, style=discord.ButtonStyle.primary)
+            btn.callback = self.answer_button
+            self.add_item(btn)
 
     async def on_timeout(self):
         for child in self.children:
@@ -65,17 +71,20 @@ class VerifyView(discord.ui.View):
         except:
             pass
 
-    @discord.ui.button(label="placeholder", style=discord.ButtonStyle.primary)
-    async def answer_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Мгновенно подтверждаем взаимодействие, чтобы избежать таймаута
+    async def answer_button(self, interaction: discord.Interaction):
+        # defer, чтобы избежать таймаута
         await interaction.response.defer(ephemeral=True)
 
         # Делаем кнопки неактивными
         for child in self.children:
             child.disabled = True
-        await interaction.message.edit(view=self)
+        try:
+            await interaction.message.edit(view=self)
+        except:
+            pass  # если сообщение удалено, игнорируем ошибку
 
-        if button.label == self.correct_answer:
+        # Проверяем ответ
+        if interaction.data["custom_id"] == self.correct_answer:
             role = interaction.guild.get_role(VERIFY_ROLE_ID)
             if role is None:
                 await interaction.followup.send("❌ Роль не найдена!", ephemeral=True)
@@ -89,7 +98,7 @@ class VerifyView(discord.ui.View):
         else:
             await interaction.followup.send("❌ Неправильно. Введите `!verify` ещё раз.", ephemeral=True)
 
-        # Удаляем сообщение пользователя и своё сообщение с кнопками
+        # Удаляем сообщения
         try:
             await self.user_message.delete()
         except:
@@ -99,8 +108,9 @@ class VerifyView(discord.ui.View):
         except:
             pass
         self.stop()
+# --- конец View ---
 
-# --- AI-функция (без изменений) ---
+# AI-функция (без изменений)
 def ask_model(prompt: str) -> str:
     if not GROQ_API_KEY:
         return "Не настроен GROQ_API_KEY."
@@ -145,13 +155,11 @@ async def chat(ctx, *, prompt: str):
 # --- Команда !verify ---
 @bot.command(name="verify")
 async def verify(ctx):
-    # Проверка канала
     if ctx.channel.id != VERIFY_CHANNEL_ID:
         await ctx.message.delete()
         await ctx.send(f"{ctx.author.mention}, эту команду можно использовать только в <#{VERIFY_CHANNEL_ID}>!", delete_after=5)
         return
 
-    # Проверка наличия роли
     member = ctx.author
     role = ctx.guild.get_role(VERIFY_ROLE_ID)
     if role and role in member.roles:
@@ -159,20 +167,16 @@ async def verify(ctx):
         await ctx.send(f"{member.mention}, вы уже верифицированы!", delete_after=3)
         return
 
-    # Случайный вопрос
     question, correct, answers = random.choice(QUESTIONS)
     random.shuffle(answers)
 
-    view = VerifyView(correct_answer=correct, user_message=ctx.message)
-    for ans in answers:
-        btn = discord.ui.Button(label=ans, style=discord.ButtonStyle.primary)
-        btn.callback = view.answer_button
-        view.add_item(btn)
+    # Передаём список ответов в View, он сам создаст кнопки
+    view = VerifyView(correct_answer=correct, answers=answers, user_message=ctx.message)
 
     msg = await ctx.send(f"**{question}**\nВыберите правильный ответ:", view=view)
     view.msg = msg
 
-# --- Остальные обработчики сообщений ---
+# Остальная обработка сообщений (без изменений)
 @bot.event
 async def on_message(message):
     if message.author.bot:
