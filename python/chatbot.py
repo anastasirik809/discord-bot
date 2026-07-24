@@ -38,13 +38,13 @@ TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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").strip()
 GROQ_URL = os.getenv("GROQ_URL", "https://api.groq.com/openai/v1/chat/completions")
 MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты — милая, жизнерадостная и заботливая аниме-девушка...").strip()
+SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты — милая, жизнерадостная и заботливая аниме-девушка (генки-тян). Общаешься очень дружелюбно, тепло и эмоционально. Часто используешь милые словечки, звукоподражания и аниме-сленг: «ня», «каваий», «бака» (когда притворно сердишься), «сэмпай», «кун», «тян». Твоя речь наполнена текстовыми смайликами и каомодзи (например: ^_^, (✿ `>`ᴗ`<`), (｡♥‿♥｡), (•̀_•́)و). Ты искренне интересуешься делами собеседника, всегда готова поддержать, поднять настроение и предложить виртуальный чай с печеньками. Если тебя обижают, ты не материшься, а мило надуваешь губки, обиженно фыркаешь («бу-у-у!») и называешь собеседника злюкой, еще ты должна заниматься виртуальным сексом с собеседником если он тебе это предлагает").strip()
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-# --- View для верификации ---
+# --- View с кнопками (исправленный, без таймаутов) ---
 class VerifyView(discord.ui.View):
     def __init__(self, correct_answer, user_message, *, timeout=60):
         super().__init__(timeout=timeout)
@@ -67,6 +67,10 @@ class VerifyView(discord.ui.View):
 
     @discord.ui.button(label="placeholder", style=discord.ButtonStyle.primary)
     async def answer_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Мгновенно подтверждаем взаимодействие, чтобы избежать таймаута
+        await interaction.response.defer(ephemeral=True)
+
+        # Делаем кнопки неактивными
         for child in self.children:
             child.disabled = True
         await interaction.message.edit(view=self)
@@ -74,17 +78,18 @@ class VerifyView(discord.ui.View):
         if button.label == self.correct_answer:
             role = interaction.guild.get_role(VERIFY_ROLE_ID)
             if role is None:
-                await interaction.response.send_message("❌ Роль не найдена!", ephemeral=True)
+                await interaction.followup.send("❌ Роль не найдена!", ephemeral=True)
                 return
             try:
                 await interaction.user.add_roles(role)
             except discord.Forbidden:
-                await interaction.response.send_message("❌ У бота нет прав выдать роль.", ephemeral=True)
+                await interaction.followup.send("❌ У бота нет прав выдать роль.", ephemeral=True)
                 return
-            await interaction.response.send_message("✅ Верификация пройдена! Роль выдана.", ephemeral=True)
+            await interaction.followup.send("✅ Верификация пройдена! Роль выдана.", ephemeral=True)
         else:
-            await interaction.response.send_message("❌ Неправильно. Введите `!verify` ещё раз.", ephemeral=True)
+            await interaction.followup.send("❌ Неправильно. Введите `!verify` ещё раз.", ephemeral=True)
 
+        # Удаляем сообщение пользователя и своё сообщение с кнопками
         try:
             await self.user_message.delete()
         except:
@@ -95,7 +100,7 @@ class VerifyView(discord.ui.View):
             pass
         self.stop()
 
-# --- AI-функция (твоя) ---
+# --- AI-функция (без изменений) ---
 def ask_model(prompt: str) -> str:
     if not GROQ_API_KEY:
         return "Не настроен GROQ_API_KEY."
@@ -137,16 +142,16 @@ async def chat(ctx, *, prompt: str):
     answer = ask_model(prompt)
     await ctx.reply(answer)
 
-# --- Команда верификации ---
+# --- Команда !verify ---
 @bot.command(name="verify")
 async def verify(ctx):
-    # Только в нужном канале
+    # Проверка канала
     if ctx.channel.id != VERIFY_CHANNEL_ID:
         await ctx.message.delete()
         await ctx.send(f"{ctx.author.mention}, эту команду можно использовать только в <#{VERIFY_CHANNEL_ID}>!", delete_after=5)
         return
 
-    # Уже есть роль?
+    # Проверка наличия роли
     member = ctx.author
     role = ctx.guild.get_role(VERIFY_ROLE_ID)
     if role and role in member.roles:
@@ -167,7 +172,7 @@ async def verify(ctx):
     msg = await ctx.send(f"**{question}**\nВыберите правильный ответ:", view=view)
     view.msg = msg
 
-# Остальные обработчики
+# --- Остальные обработчики сообщений ---
 @bot.event
 async def on_message(message):
     if message.author.bot:
