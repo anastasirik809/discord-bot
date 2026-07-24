@@ -10,12 +10,13 @@ from threading import Thread
 VERIFY_CHANNEL_ID = 1519053756103131297
 VERIFY_ROLE_ID    = 1518264760674685070
 
+# Только простые примеры на + и -
 QUESTIONS = [
-    ("Сколько будет 5 + 5?", "10", ["8", "9", "10", "11", "12"]),
-    ("Сколько будет 3 × 7?", "21", ["14", "20", "21", "24", "28"]),
-    ("Сколько будет 12 − 4?", "8", ["6", "7", "8", "9", "10"]),
-    ("Сколько будет 16 ÷ 2?", "8", ["4", "6", "8", "10", "12"]),
-    ("Чему равен квадратный корень из 49?", "7", ["5", "6", "7", "8", "9"])
+    ("Сколько будет 2 + 3?", "5", ["4", "5", "6", "7", "8"]),
+    ("Сколько будет 7 - 2?", "5", ["3", "4", "5", "6", "7"]),
+    ("Сколько будет 1 + 4?", "5", ["3", "4", "5", "6", "7"]),
+    ("Сколько будет 8 - 3?", "5", ["2", "3", "5", "6", "7"]),
+    ("Сколько будет 0 + 5?", "5", ["3", "4", "5", "6", "7"])
 ]
 
 # Flask-сервер
@@ -44,7 +45,7 @@ INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-# --- View с кнопками (полностью ручное создание, без декоратора) ---
+# --- View с кнопками (финальная версия) ---
 class VerifyView(discord.ui.View):
     def __init__(self, correct_answer, answers, user_message, *, timeout=60):
         super().__init__(timeout=timeout)
@@ -52,9 +53,9 @@ class VerifyView(discord.ui.View):
         self.user_message = user_message
         self.msg = None
 
-        # Создаём кнопки вручную, никаких шаблонных placeholder
+        # Создаём кнопки вручную с ЯВНЫМ custom_id, равным тексту ответа
         for ans in answers:
-            btn = discord.ui.Button(label=ans, style=discord.ButtonStyle.primary)
+            btn = discord.ui.Button(label=ans, style=discord.ButtonStyle.primary, custom_id=ans)
             btn.callback = self.answer_button
             self.add_item(btn)
 
@@ -72,18 +73,18 @@ class VerifyView(discord.ui.View):
             pass
 
     async def answer_button(self, interaction: discord.Interaction):
-        # defer, чтобы избежать таймаута
+        # defer, чтобы не словить таймаут
         await interaction.response.defer(ephemeral=True)
 
-        # Делаем кнопки неактивными
+        # Отключаем кнопки
         for child in self.children:
             child.disabled = True
         try:
             await interaction.message.edit(view=self)
         except:
-            pass  # если сообщение удалено, игнорируем ошибку
+            pass
 
-        # Проверяем ответ
+        # Сравниваем custom_id нажатой кнопки с правильным ответом
         if interaction.data["custom_id"] == self.correct_answer:
             role = interaction.guild.get_role(VERIFY_ROLE_ID)
             if role is None:
@@ -170,13 +171,12 @@ async def verify(ctx):
     question, correct, answers = random.choice(QUESTIONS)
     random.shuffle(answers)
 
-    # Передаём список ответов в View, он сам создаст кнопки
     view = VerifyView(correct_answer=correct, answers=answers, user_message=ctx.message)
 
     msg = await ctx.send(f"**{question}**\nВыберите правильный ответ:", view=view)
     view.msg = msg
 
-# Остальная обработка сообщений (без изменений)
+# Остальная обработка сообщений
 @bot.event
 async def on_message(message):
     if message.author.bot:
